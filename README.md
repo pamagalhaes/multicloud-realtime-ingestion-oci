@@ -1,220 +1,169 @@
+# Multicloud Real‑Time Ingestion (Confluent Cloud on Azure → Oracle Cloud Infrastructure)
 
-# Multicloud Streaming Architecture  
-## Confluent Cloud (Azure) → Oracle Cloud Infrastructure (OCI)
+**Goal:** validate an enterprise‑grade streaming pattern where **Confluent Cloud** is the real‑time backbone and **OCI Object Storage** is the durable landing zone for downstream analytics and data lake ingestion.
 
----
-
-## Context
-
-This repository documents a real-world architectural validation of a multicloud streaming pipeline using Confluent Cloud as the event backbone and Oracle Cloud Infrastructure (OCI) as the persistence layer.
-
-The objective was not to “connect two services”, but to validate architectural decisions under enterprise constraints:
-
-- How to process business logic before persistence
-- How to reduce cross-cloud traffic intentionally
-- How to integrate clouds without sharing credentials
-- How to troubleshoot serialization and TLS issues in managed environments
-- How to operate everything using fully managed services
-
-No VMs.  
-No Kubernetes cluster.  
-No custom microservices.  
-Only managed streaming and storage services.
+This repo is intentionally **managed‑services only**:
+- No VMs
+- No Kubernetes
+- No custom microservices
+- Streaming + storage, with clear operational evidence
 
 ---
 
-## Architectural Principles
+## Architecture at a glance
 
-This implementation was guided by five core principles:
+> Place your architecture diagram here:
+>
+> **`images/architecture.png`** (recommended size: ~1600px wide)
 
-1. **Streaming as the system of record**
-2. **Business logic executed in motion**
-3. **Cross-cloud traffic minimized**
-4. **Security without credential leakage**
-5. **Vendor-neutral integration design**
+![Architecture](images/architecture.png)
 
----
+### Reference flow (Mermaid)
 
-## High-Level Architecture
+```mermaid
+graph TD
+  subgraph Azure["🟦 Microsoft Azure (Confluent Cloud)"]
+    A["Sales Generator (Faker Source)"] -->|Avro (binary)| B["Apache Flink SQL"]
+    B -->|"Filter: order_total > 5"| C["Kafka topic: oci_vip_orders"]
+    C -->|Avro deserialization| D["HTTP Sink Connector"]
+  end
 
-Datagen Source  
-→ Kafka Topic (`orders_source`)  
-→ Flink SQL Processing  
-→ Kafka Topic (`oci_vip_orders`)  
-→ HTTP Sink Connector  
-→ OCI Object Storage  
+  D -.->|"HTTPS (PUT) JSON payload"| E
 
----
-
-## Operational Evidence
-
-### Confluent Cluster Running
-
-Demonstrates active throughput and CKU allocation.
-
-![Cluster Overview](images/cluster_overview.png)
-
-This confirms that the streaming backbone was operating under real load.
-
----
-
-### Topic-Level Volume Validation
-
-The raw topic and filtered topic present a clear delta in retained bytes.
-
-![Topics Overview](images/topics_overview.png)
-
-- `orders_source`: raw ingestion
-- `oci_vip_orders`: filtered events
-
-This validates that business logic was applied before persistence, reducing storage footprint and cross-cloud bandwidth.
-
----
-
-### Connector Health & Throughput
-
-HTTP Sink running with stable message processing and zero DLQ messages.
-
-![HTTP Sink Running](images/http_sink_running.png)
-
-This validates operational stability and absence of downstream serialization failures.
-
----
-
-### Object Successfully Persisted in OCI
-
-![OCI Bucket Object](images/oci_bucket_object.png)
-
-File `pedido_lab.json` confirms end-to-end delivery across cloud providers.
-
----
-
-## Design Decisions & Trade-Offs
-
-### Why HTTP Sink Instead of S3 Sink?
-
-The decision to use HTTP instead of an S3-specific connector avoids dependency on AWS endpoint semantics and ensures vendor-neutral interoperability.
-
-This makes the integration portable and cloud-agnostic.
-
----
-
-### Why Filter in Stream Instead of Downstream?
-
-Applying:
-
-```sql
-WHERE orderunits > 5
+  subgraph OCI["🟥 Oracle Cloud Infrastructure (OCI)"]
+    E["OCI Object Storage (PAR endpoint)"] -->|Write object| F["pedido_lab.json"]
+  end
 ```
 
-inside Flink SQL:
+---
 
-- Reduces unnecessary object writes
-- Minimizes network traffic between clouds
-- Decreases storage growth
-- Improves downstream query efficiency
+## What’s implemented
 
-This is a cost-aware architecture decision.
+### 1) Event generation (source)
+- Synthetic order events generated via **Faker** into a Kafka topic (Avro-encoded)
+
+### 2) In‑motion processing (Flink SQL)
+- A **Flink SQL** job applies business rules while data is “in flight”
+- Example: keep only VIP/high-value orders (`order_total > 5`) and write to a curated topic
+
+### 3) Delivery to OCI (Kafka Connect)
+- A managed **HTTP Sink Connector** delivers curated events to OCI via **HTTPS**
+- Payload is delivered as **JSON** to an **Object Storage Pre‑Authenticated Request (PAR)** endpoint
+
+### 4) Durable landing zone (OCI Object Storage)
+- Objects land in a bucket as JSON files (example: `pedido_lab.json`)
+- This pattern is a clean handoff to:
+  - Data Lake ingestion
+  - Batch analytics
+  - Downstream ETL/ELT pipelines
 
 ---
 
-### Why TLS 1.2 Explicitly?
+## Why this pattern is “enterprise”
 
-Initial SSL handshake failures exposed a JVM-level protocol negotiation mismatch.
+**Separation of concerns**
+- Streaming layer handles real‑time transport and operational guarantees
+- Storage layer handles durability, retention, and downstream consumption
 
-Resolution:
+**Managed operations**
+- Confluent Cloud provides operational controls (throughput, CKU, connector health, DLQ)
+- OCI Object Storage provides durable storage with lifecycle policies and cost tiers
+
+**Security posture**
+- No credentials embedded in code
+- Delivery uses **HTTPS** and **OCI PAR** (time‑bound access to a specific object/bucket path)
+
+---
+
+## Repo structure
 
 ```
-ssl.protocol = TLSv1.2
+.
+├── README.md
+├── images/
+│   ├── architecture.png              # add your architecture diagram here
+│   ├── cluster_overview.png
+│   ├── topics_overview.png
+│   ├── http_sink_running.png
+│   └── oci_bucket_object.png
+├── config/
+│   └── http_sink_connector.json      # connector configuration (sanitized)
+└── src/
+    ├── 01_source_faker.sql           # creates source + sample generator
+    ├── 02_sink_table.sql             # defines the sink/curated stream/table
+    └── 03_process_logic.sql          # business rule (filtering/transform)
 ```
 
-This highlights awareness of transport-layer behavior in managed Kafka Connect environments.
+---
+
+## How to run (high level)
+
+> This repo focuses on architecture and operational validation.  
+> Replace placeholders with your own Confluent/OCI values.
+
+1. **Create Confluent Cloud resources**
+   - Cluster (Azure region)
+   - API keys
+   - Topics (source + curated)
+
+2. **Create Flink SQL statements**
+   - Run scripts in `src/` in order:
+     - `01_source_faker.sql`
+     - `02_sink_table.sql`
+     - `03_process_logic.sql`
+
+3. **Create the HTTP Sink Connector**
+   - Use `config/http_sink_connector.json`
+   - Point it to your OCI Object Storage **PAR endpoint**
+   - Validate connector status and task health
+
+4. **Validate delivery to OCI**
+   - Confirm objects created in your bucket
+   - Confirm payload format and expected filtering behavior
 
 ---
 
-### Why Convert AVRO to JSON at the Edge?
+## Operational evidence (screenshots)
 
-Internal topic format: Avro (Schema Registry governed).  
-External storage requirement: Readable JSON.
+### Confluent cluster running
+![Cluster running](images/cluster_overview.png)
 
-```
-request.body.format = json
-```
+### Topic‑level validation
+![Topics](images/topics_overview.png)
 
-Conversion at the connector boundary preserves internal efficiency while ensuring external usability.
+### HTTP Sink Connector running
+![HTTP Sink running](images/http_sink_running.png)
 
----
-
-## Enterprise Considerations
-
-### Scalability
-
-- 6 partitions configured for parallelism
-- Stateless filtering logic ensures horizontal scalability
-- Connector can scale via tasks.max if needed
+### Object landed in OCI
+![OCI bucket object](images/oci_bucket_object.png)
 
 ---
 
-### Failure Handling
+## Notes on reliability and troubleshooting
 
-- Dedicated DLQ topics provisioned
-- No DLQ messages observed during test
-- Batch size set to 1 to reduce replay complexity
-
----
-
-### Security Model
-
-- Kafka authentication via API keys
-- No static OCI credentials shared
-- Access granted via Pre-Authenticated Request (time-bound)
-- HTTPS-only communication
-
-This follows least-privilege principles.
+- **DLQ:** keep DLQ enabled for malformed messages or transient failures
+- **Idempotency:** when writing to Object Storage, prefer deterministic object keys (if/when supported) to avoid duplicates
+- **Schema changes:** treat schema evolution as a first‑class concern (Schema Registry strategy + compatibility settings)
+- **TLS issues:** common root causes are endpoint policy, cipher mismatch, or missing CA chain; validate with connector logs
 
 ---
 
-## Metrics Observed
+## Where this goes next (optional enhancements)
 
-| Metric | Value |
-|--------|-------|
-| Messages processed | 14,000+ |
-| DLQ messages | 0 |
-| End-to-end latency | < 2 seconds |
-| Cross-cloud protocol | HTTPS PUT |
-| Storage layer | OCI Object Storage |
-| Infrastructure provisioned | None |
+If you want to evolve this into a stronger “solution blueprint”:
 
----
-
-## What This Demonstrates
-
-This project demonstrates practical experience with:
-
-- Kafka topic modeling
-- Flink SQL stream processing
-- Cross-cloud architectural integration
-- TLS troubleshooting
-- Schema-aware serialization
-- Cost-conscious data design
-- Managed service orchestration
-
-The focus was architectural validation, not feature exploration.
+- **Object naming strategy** per partition/time window (improves replay and downstream ingestion)
+- **Compression** (smaller egress + storage footprint)
+- **Lifecycle policies** in OCI (hot → cool → archive)
+- **Downstream ingestion** into an OCI lakehouse stack:
+  - OCI Data Integration / Data Flow
+  - Autonomous Data Warehouse / Lakehouse patterns
+  - HeatWave / MySQL analytics, depending on use case
 
 ---
 
-## Potential Next Iterations
+## About
 
-- Parquet persistence for analytics optimization
-- Integration with Autonomous Data Warehouse
-- Lag monitoring dashboards
-- Backpressure simulation
-- Throughput stress testing
+Built and documented by **Paulo Magalhães**.  
+Focus: enterprise cloud architecture, managed streaming, and pragmatic multicloud integration.
 
----
-
-## Author
-
-Paulo Magalhães  
-Cloud Solutions Engineer  
-Enterprise Streaming & Multicloud Architect
