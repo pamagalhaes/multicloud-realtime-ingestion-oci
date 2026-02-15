@@ -12,28 +12,7 @@ This repo is intentionally **managed‑services only**:
 
 ## Architecture at a glance
 
-> Place your architecture diagram here:
->
-> **`images/architecture.png`** (recommended size: ~1600px wide)
-
 ![Architecture](images/architecture.png)
-
-### Reference flow (Mermaid)
-
-```mermaid
-graph TD
-  subgraph Azure["🟦 Microsoft Azure (Confluent Cloud)"]
-    A["Sales Generator (Faker Source)"] -->|Avro (binary)| B["Apache Flink SQL"]
-    B -->|"Filter: order_total > 5"| C["Kafka topic: oci_vip_orders"]
-    C -->|Avro deserialization| D["HTTP Sink Connector"]
-  end
-
-  D -.->|"HTTPS (PUT) JSON payload"| E
-
-  subgraph OCI["🟥 Oracle Cloud Infrastructure (OCI)"]
-    E["OCI Object Storage (PAR endpoint)"] -->|Write object| F["pedido_lab.json"]
-  end
-```
 
 ---
 
@@ -97,9 +76,6 @@ graph TD
 ---
 
 ## How to run (high level)
-
-> This repo focuses on architecture and operational validation.  
-> Replace placeholders with your own Confluent/OCI values.
 
 1. **Create Confluent Cloud resources**
    - Cluster (Azure region)
@@ -165,5 +141,6 @@ If you want to evolve this into a stronger “solution blueprint”:
 ## About
 
 Built and documented by **Paulo Magalhães**.  
+linkedin: https://www.linkedin.com/in/paulomagalhaes82/
 Focus: enterprise cloud architecture, managed streaming, and pragmatic multicloud integration.
 
